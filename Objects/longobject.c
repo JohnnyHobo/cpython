@@ -42,7 +42,7 @@ PyObject *_PyLong_One = NULL;
 */
 static PyLongObject small_ints[NSMALLNEGINTS + NSMALLPOSINTS];
 #ifdef COUNT_ALLOCS
-Py_ssize_t quick_int_allocs, quick_neg_int_allocs;
+Py_ssize_t _Py_quick_int_allocs, _Py_quick_neg_int_allocs;
 #endif
 
 static PyObject *
@@ -54,9 +54,9 @@ get_small_int(sdigit ival)
     Py_INCREF(v);
 #ifdef COUNT_ALLOCS
     if (ival >= 0)
-        quick_int_allocs++;
+        _Py_quick_int_allocs++;
     else
-        quick_neg_int_allocs++;
+        _Py_quick_neg_int_allocs++;
 #endif
     return v;
 }
@@ -4103,8 +4103,8 @@ long_divmod(PyObject *a, PyObject *b)
     }
     z = PyTuple_New(2);
     if (z != NULL) {
-        PyTuple_SetItem(z, 0, (PyObject *) div);
-        PyTuple_SetItem(z, 1, (PyObject *) mod);
+        PyTuple_SET_ITEM(z, 0, (PyObject *) div);
+        PyTuple_SET_ITEM(z, 1, (PyObject *) mod);
     }
     else {
         Py_DECREF(div);
@@ -5280,13 +5280,8 @@ static PyObject *
 int_as_integer_ratio_impl(PyObject *self)
 /*[clinic end generated code: output=e60803ae1cc8621a input=55ce3058e15de393]*/
 {
-    PyObject *numerator;
     PyObject *ratio_tuple;
-
-    if (PyLong_CheckExact(self)) {
-        return PyTuple_Pack(2, self, _PyLong_One);
-    }
-    numerator = _PyLong_Copy((PyLongObject *) self);
+    PyObject *numerator = long_long(self);
     if (numerator == NULL) {
         return NULL;
     }
@@ -5640,8 +5635,9 @@ _PyLong_Init(void)
 
     /* initialize int_info */
     if (Int_InfoType.tp_name == NULL) {
-        if (PyStructSequence_InitType2(&Int_InfoType, &int_info_desc) < 0)
+        if (PyStructSequence_InitType2(&Int_InfoType, &int_info_desc) < 0) {
             return 0;
+        }
     }
 
     return 1;

@@ -2,10 +2,20 @@
 
 #include "Python.h"
 #include "osdefs.h"
-#include "internal/pygetopt.h"
-#include "internal/pystate.h"
+#include "pycore_getopt.h"
+#include "pycore_pathconfig.h"
+#include "pycore_pylifecycle.h"
+#include "pycore_pymem.h"
+#include "pycore_pystate.h"
 
 #include <locale.h>
+#ifdef HAVE_SIGNAL_H
+#include <signal.h>
+#endif
+#include <stdio.h>
+#if defined(HAVE_GETPID) && defined(HAVE_UNISTD_H)
+#include <unistd.h>
+#endif
 
 #if defined(MS_WINDOWS) || defined(__CYGWIN__)
 #  include <windows.h>
@@ -1373,6 +1383,7 @@ pymain_read_conf(_PyMain *pymain, _PyCoreConfig *config,
             goto done;
         }
         pymain_clear_cmdline(pymain, cmdline);
+        pymain_clear_pymain(pymain);
         memset(cmdline, 0, sizeof(*cmdline));
         config->utf8_mode = new_utf8_mode;
         config->coerce_c_locale = new_coerce_c_locale;
@@ -1438,7 +1449,8 @@ _PyMainInterpreterConfig_Copy(_PyMainInterpreterConfig *config,
 {
     _PyMainInterpreterConfig_Clear(config);
 
-#define COPY_ATTR(ATTR) \
+#define COPY_ATTR(ATTR) config->ATTR = config2->ATTR
+#define COPY_OBJ_ATTR(ATTR) \
     do { \
         if (config2->ATTR != NULL) { \
             config->ATTR = config_copy_attr(config2->ATTR); \
@@ -1448,18 +1460,78 @@ _PyMainInterpreterConfig_Copy(_PyMainInterpreterConfig *config,
         } \
     } while (0)
 
-    COPY_ATTR(argv);
-    COPY_ATTR(executable);
-    COPY_ATTR(prefix);
-    COPY_ATTR(base_prefix);
-    COPY_ATTR(exec_prefix);
-    COPY_ATTR(base_exec_prefix);
-    COPY_ATTR(warnoptions);
-    COPY_ATTR(xoptions);
-    COPY_ATTR(module_search_path);
-    COPY_ATTR(pycache_prefix);
+    COPY_ATTR(install_signal_handlers);
+    COPY_OBJ_ATTR(argv);
+    COPY_OBJ_ATTR(executable);
+    COPY_OBJ_ATTR(prefix);
+    COPY_OBJ_ATTR(base_prefix);
+    COPY_OBJ_ATTR(exec_prefix);
+    COPY_OBJ_ATTR(base_exec_prefix);
+    COPY_OBJ_ATTR(warnoptions);
+    COPY_OBJ_ATTR(xoptions);
+    COPY_OBJ_ATTR(module_search_path);
+    COPY_OBJ_ATTR(pycache_prefix);
 #undef COPY_ATTR
+#undef COPY_OBJ_ATTR
     return 0;
+}
+
+
+PyObject*
+_PyMainInterpreterConfig_AsDict(const _PyMainInterpreterConfig *config)
+{
+    PyObject *dict, *obj;
+    int res;
+
+    dict = PyDict_New();
+    if (dict == NULL) {
+        return NULL;
+    }
+
+#define SET_ITEM_INT(ATTR) \
+    do { \
+        obj = PyLong_FromLong(config->ATTR); \
+        if (obj == NULL) { \
+            goto fail; \
+        } \
+        res = PyDict_SetItemString(dict, #ATTR, obj); \
+        Py_DECREF(obj); \
+        if (res < 0) { \
+            goto fail; \
+        } \
+    } while (0)
+
+#define SET_ITEM_OBJ(ATTR) \
+    do { \
+        obj = config->ATTR; \
+        if (obj == NULL) { \
+            obj = Py_None; \
+        } \
+        res = PyDict_SetItemString(dict, #ATTR, obj); \
+        if (res < 0) { \
+            goto fail; \
+        } \
+    } while (0)
+
+    SET_ITEM_INT(install_signal_handlers);
+    SET_ITEM_OBJ(argv);
+    SET_ITEM_OBJ(executable);
+    SET_ITEM_OBJ(prefix);
+    SET_ITEM_OBJ(base_prefix);
+    SET_ITEM_OBJ(exec_prefix);
+    SET_ITEM_OBJ(base_exec_prefix);
+    SET_ITEM_OBJ(warnoptions);
+    SET_ITEM_OBJ(xoptions);
+    SET_ITEM_OBJ(module_search_path);
+    SET_ITEM_OBJ(pycache_prefix);
+
+    return dict;
+
+fail:
+    Py_DECREF(dict);
+    return NULL;
+
+#undef SET_ITEM_OBJ
 }
 
 
@@ -1764,6 +1836,29 @@ pymain_main(_PyMain *pymain)
     }
 
     pymain_free(pymain);
+
+    if (_Py_UnhandledKeyboardInterrupt) {
+        /* https://bugs.python.org/issue1054041 - We need to exit via the
+         * SIG_DFL handler for SIGINT if KeyboardInterrupt went unhandled.
+         * If we don't, a calling process such as a shell may not know
+         * about the user's ^C.  https://www.cons.org/cracauer/sigint.html */
+#if defined(HAVE_GETPID) && !defined(MS_WINDOWS)
+        if (PyOS_setsig(SIGINT, SIG_DFL) == SIG_ERR) {
+            perror("signal");  /* Impossible in normal environments. */
+        } else {
+            kill(getpid(), SIGINT);
+        }
+        /* If setting SIG_DFL failed, or kill failed to terminate us,
+         * there isn't much else we can do aside from an error code. */
+#endif  /* HAVE_GETPID && !MS_WINDOWS */
+#ifdef MS_WINDOWS
+        /* cmd.exe detects this, prints ^C, and offers to terminate. */
+        /* https://msdn.microsoft.com/en-us/library/cc704588.aspx */
+        pymain->status = STATUS_CONTROL_C_EXIT;
+#else
+        pymain->status = SIGINT + 128;
+#endif  /* !MS_WINDOWS */
+    }
 
     return pymain->status;
 }
